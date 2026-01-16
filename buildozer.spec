@@ -13,7 +13,7 @@ package.domain = org.zotero
 source.dir = .
 
 # (list) 要包含的源文件
-source.include_exts = py,png,jpg,kv,atlas,json,otf,ttf,ttc
+source.include_exts = py,png,jpg,kv,atlas,json,otf,ttf,ttc,java,xml
 
 # (list) 要排除的目录
 source.exclude_dirs = tests, bin, venv, .git, __pycache__, .buildozer
@@ -116,7 +116,7 @@ android.enable_androidx = True
 # android.add_jars =
 
 # (list) 添加Java源文件夹
-# android.add_src =
+android.add_src = src/android
 
 # (list) 添加AAR文件
 # android.add_aars =
@@ -135,6 +135,9 @@ android.enable_androidx = True
 
 # (str) manifest文件
 # android.manifest.filename =
+
+# (str) 额外的manifest XML内容 (注入到<application>标签内)
+android.extra_manifest_xml = ./src/android/extra_manifest.xml
 
 # (str) 自定义java代码
 # android.add_java_sources =

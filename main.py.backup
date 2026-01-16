@@ -226,73 +226,10 @@ class FloatingBubble:
         
         # Fallback flag for main Activity clipboard access
         self.pending_clipboard_read = False
-
-        # Background translation lock (avoid overlapping requests)
-        self.is_translating = False
         
         # Start polling for SharedPreferences results
         if platform == 'android':
             Clock.schedule_interval(self._poll_clipboard_result, 0.1)  # Check every 100ms
-
-    def _start_clipboard_waiter(self, request_id, timeout_s=3.0, poll_interval_s=0.05):
-        """Wait for ClipboardBridgeActivity result without relying on Kivy Clock."""
-        if platform != 'android' or not request_id:
-            return
-
-        def waiter():
-            import time
-
-            deadline = time.time() + timeout_s
-            while time.time() < deadline:
-                if self.pending_request_id != request_id:
-                    return
-
-                try:
-                    from jnius import autoclass
-                    PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                    Context = autoclass('android.content.Context')
-
-                    activity = PythonActivity.mActivity
-                    if not activity:
-                        time.sleep(poll_interval_s)
-                        continue
-
-                    prefs = activity.getSharedPreferences("zoterotranslator", Context.MODE_PRIVATE)
-                    result_request_id = prefs.getString("clip_request_id", "")
-
-                    if result_request_id == request_id:
-                        clip_text = prefs.getString("clip_text", "")
-                        self._handle_clipboard_result(request_id, clip_text)
-                        return
-
-                except Exception as e:
-                    print(f"[FloatingBubble] Clipboard waiter error: {e}")
-
-                time.sleep(poll_interval_s)
-
-        import threading
-        thread = threading.Thread(target=waiter, daemon=True)
-        thread.start()
-
-    def _handle_clipboard_result(self, request_id, clip_text):
-        """Handle clipboard result from SharedPreferences (safe to call from any thread)."""
-        if not request_id or request_id != self.pending_request_id:
-            return
-
-        self.update_status("step3")
-
-        print(f"[FloatingBubble] Got clipboard result for request {request_id}")
-        print(f"[FloatingBubble] Text length: {len(clip_text) if clip_text else 0}")
-
-        self.pending_request_id = None
-        self.last_processed_request_id = request_id
-
-        if clip_text and len(clip_text.strip()) > 0:
-            print("[FloatingBubble] Starting background translation...")
-            self._start_background_translation(clip_text)
-        else:
-            show_toast("Clipboard empty")
-            self.update_status("error")
     
     def _poll_clipboard_result(self, dt):
         """Poll SharedPreferences for clipboard result from ClipboardBridgeActivity"""
@@ -314,8 +251,30 @@ class FloatingBubble:
             
             # Check if this is our request
             if result_request_id == self.pending_request_id:
+                self.update_status("step3")
                 clip_text = prefs.getString("clip_text", "")
-                self._handle_clipboard_result(result_request_id, clip_text)
+                
+                print(f"[FloatingBubble] Got clipboard result for request {result_request_id}")
+                print(f"[FloatingBubble] Text length: {len(clip_text) if clip_text else 0}")
+                
+                # Clear pending request
+                self.pending_request_id = None
+                self.last_processed_request_id = result_request_id
+                
+                # Vibrate to indicate we got the text
+                try:
+                    vibrator = activity.getSystemService(Context.VIBRATOR_SERVICE)
+                    vibrator.vibrate(100)
+                except:
+                    pass
+                
+                if clip_text and len(clip_text.strip()) > 0:
+                    # Start translation in background
+                    print(f"[FloatingBubble] Starting background translation...")
+                    self._start_background_translation(clip_text)
+                else:
+                    show_toast("Clipboard empty")
+                    self.update_status("error")
                     
         except Exception as e:
             print(f"[FloatingBubble] Poll error: {e}")
@@ -323,47 +282,36 @@ class FloatingBubble:
     def _start_background_translation(self, text):
         """Start translation in background thread, update bubble when done"""
         import threading
-
-        if self.is_translating:
-            show_toast("Already translating...")
-            return
-
-        self.is_translating = True
         
         def translate_thread():
             try:
+                # Get app instance and translator
                 app = App.get_running_app()
-                if not app or not hasattr(app, 'translator'):
-                    print("[FloatingBubble] No app or translator")
-                    self._show_translation_error("Translator not initialized")
+                if not app or not hasattr(app, 'main_widget'):
+                    print("[FloatingBubble] No app or main_widget")
                     return
-
-                print("[FloatingBubble] Translating...")
-                self.update_status("step4")
+                
+                translator = app.main_widget.translator
+                target_lang = app.main_widget.target_language
+                
+                print(f"[FloatingBubble] Translating to {target_lang}...")
                 
                 # Do translation
-                result = app.translator.translate(text)
+                result = translator.translate(text, target_lang)
                 
-                if not result:
+                if result:
+                    print(f"[FloatingBubble] Translation success: {result[:50]}...")
+                    # Update UI on main thread
+                    Clock.schedule_once(lambda dt: self._show_translation_result(result), 0)
+                else:
                     print("[FloatingBubble] Translation returned empty")
-                    self._show_translation_error("Translation failed")
-                    return
-
-                if result.startswith("Error:") or result.startswith("Translation failed:"):
-                    self._show_translation_error(result)
-                    return
-
-                print(f"[FloatingBubble] Translation success: {result[:50]}...")
-                self.update_status("step5")
-                self._show_translation_result(result)
+                    Clock.schedule_once(lambda dt: self._show_translation_error("Translation failed"), 0)
                     
             except Exception as e:
                 print(f"[FloatingBubble] Translation error: {e}")
                 import traceback
                 traceback.print_exc()
-                self._show_translation_error(str(e))
-            finally:
-                self.is_translating = False
+                Clock.schedule_once(lambda dt: self._show_translation_error(str(e)), 0)
         
         # Start translation thread
         thread = threading.Thread(target=translate_thread)
@@ -374,7 +322,7 @@ class FloatingBubble:
         """Show translation result in bubble panel (called on main thread)"""
         try:
             self.show_translation(result)
-            self.update_status("done")
+            self.update_status("idle")
             
             # Vibrate to indicate translation complete
             if platform == 'android':
@@ -531,7 +479,6 @@ class FloatingBubble:
                                         pass
                                     launched = True
                                     print(f"[FloatingBubble] Launched ClipboardBridgeActivity: {request_id}")
-                                    self.bubble_ref._start_clipboard_waiter(request_id)
                                     vibrator.vibrate(100)
                                 except Exception as bridge_err:
                                     print(f"[FloatingBubble] ClipboardBridgeActivity failed: {bridge_err}")
@@ -1504,13 +1451,6 @@ class TranslatorWidget(BoxLayout):
         else:
             self.status_label.text = "Translation complete"
             self.status_label.color = (0.3, 0.9, 0.3, 1)
-        
-        # If we're in fallback mode, go back to background after showing result
-        if hasattr(self.app, 'fallback_mode_active') and self.app.fallback_mode_active:
-            self.app.fallback_mode_active = False
-            print("[UpdateTranslation] Fallback mode: going to background after delay")
-            # Wait a bit for panel to show before going to background
-            Clock.schedule_once(lambda dt: self.app._go_to_background_now(), 1.0)
     
     def copy_translation(self, instance):
         try:
@@ -1649,9 +1589,11 @@ class ZoteroTranslatorApp(App):
                 print(f"[App] Kivy clipboard error: {e}")
         
         if clipboard_text and len(clipboard_text.strip()) > 0:
-            # Got text! Go back immediately, then translate in background and show via bubble overlay.
+            # Got text! Go back IMMEDIATELY, then translate in background
             self._go_to_background_now()
-            self.floating_bubble._start_background_translation(clipboard_text)
+            
+            # Start background translation (will update bubble when done)
+            self.main_widget._do_bubble_translate_with_text(clipboard_text)
         else:
             show_toast("Cannot read clipboard")
             self.floating_bubble.update_status("error")

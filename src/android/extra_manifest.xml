@@ -1,0 +1,13 @@
+<application>
+    <!-- Transparent Activity for clipboard access on Android 10+ -->
+    <activity
+        android:name="org.zotero.zoterotranslator.ClipboardBridgeActivity"
+        android:exported="false"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar"
+        android:noHistory="true"
+        android:excludeFromRecents="true"
+        android:launchMode="singleTask"
+        android:taskAffinity=""
+        android:finishOnTaskLaunch="true"/>
+</application>
+
